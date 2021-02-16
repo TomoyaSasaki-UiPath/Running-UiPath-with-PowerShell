@@ -1,0 +1,261 @@
+Param (
+	$uriOrch = "https://cloud.uipath.com",
+	[string] $folder = "16286",
+	[string] $id = "3973", 
+	[int] $retry = 20,  
+	[int] $interval = 3,
+	[string] $userKey = "HY_OGNlBXFvlLjxRNIXakei7gwQP3YQ-jchv0swjdI5GU",
+	[string] $accountLogicalName = "uipatcncejvb",
+	[string] $tenantLogicalName = "TEST",
+	[string] $clientId = "8DEv1AMNXczW3y4U15LL3jYf62jK93n5",
+	[string] $uriAccount = "https://account.uipath.com/oauth/token" # For Cloud Orchestrator
+)
+
+function WriteLog
+{
+	Param ($message, [switch] $err)
+	
+	$now = Get-Date -Format "G"
+	$line = "$now`t$message"
+	$line | Add-Content $debugLog -Encoding UTF8
+	if ($err)
+	{
+		Write-Host $line -ForegroundColor red
+	} else {
+		Write-Host $line
+	}
+}
+
+# TLS1.2
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
+$scriptPath = Split-Path -Parent $MyInvocation.MyCommand.Path
+$debugLog = "$scriptPath\orchestrator-job.log"
+
+# Orchestrator Login
+WriteLog "-----------------------------------------------------------------------------"
+$contentType = "application/json;charset=utf-8"
+if ($userKey -ne "" -and $clientId -ne "")
+{
+	# Cloud Orchestrator
+	$uriOrch += "/$accountLogicalName/$tenantLogicalName"
+	$bodyAccount = @{
+		"grant_type" = "refresh_token"
+		"client_id" = $clientId
+		"refresh_token" = $userKey
+	} | ConvertTo-Json
+	
+	$clientIdMask = $clientId.Substring(0, 4) + ("*" * ($clientId.Length - 4))
+	WriteLog "Login to [$uriOrch] with UserKey [$userKey] & ClientId [$clientIdMask] ..." 
+	$resAccount = Invoke-RestMethod -Uri $uriAccount -Method Post -Body $bodyAccount -ContentType $contentType
+	
+	# Login success or fail
+	$authKey = $resAccount.access_token
+	if ($authKey)
+	{
+		WriteLog "Cloud Orchestrator Login success" -color "Cyan"
+		$headers = @{"X-UIPATH-TenantName" = $tenantLogicalName; "Authorization"="Bearer $authKey"}
+	} else {
+		WriteLog "ERROR: Orchestrator Login failed" -color "Red"
+		exit 1
+	}
+} 
+	WriteLog "Login to [$uriOrch] with Tenant [$tenantName] & Admin [$adminName] ..." 
+	$resAccount = Invoke-RestMethod -Uri $uriAccount -Method Post -Body $bodyAccount -ContentType $contentType
+	
+	# Login success or fail
+	if ($resAccount.success -eq "True")
+	{
+		WriteLog "On-prem Orchestrator Login success" -color "Cyan"
+		$authKey = $resAccount.result
+		$headers = @{"Authorization"="Bearer $authKey"}	
+	} else {
+		WriteLog "ERROR: Orchestrator Login failed" -color "Red"
+		exit 1
+	}
+}
+
+# Folder ID
+if ($folder -eq "")
+{
+	# Interactive Mode to choose Folder
+	$uriFolder = "$uriOrch/api/FoldersNavigation/GetAllFoldersForCurrentUser"
+	$resFolder = Invoke-RestMethod -Uri $uriFolder -Method Get -ContentType $contentType -Headers $headers
+	
+	if ($resFolder)
+	{
+		WriteLog "============================== Folder List =============================="
+		$resFolder | foreach {
+			$folderId = $_.Id
+			$folderName = $_.FullyQualifiedName
+			WriteLog " [$folderId] $folderName"
+		}
+		WriteLog "=============================================================================="
+		$folder = Read-Host "Input Folder ID"
+	}
+}
+
+if ($folder -eq "")
+{
+	WriteLog -err "ERROR: Specify a folder ID!"
+	exit 1
+} else {
+	# Get Folder
+	$uriFolder = "$uriOrch/odata/Folders($folder)"
+
+	WriteLog "Getting a Folder [$folder] ..."
+
+	$resFolder = Invoke-RestMethod -Uri $uriFolder -Method Get -ContentType $contentType -Headers $headers -UseDefaultCredentials:$windowsAuth
+	if ($resFolder)
+	{
+		$folderType = $resFolder.ProvisionType
+	} else {
+		WriteLog -err "ERROR: Specify a correct folder ID!"
+		exit 1		
+	}
+}
+
+# Add Folder ID to Request Header		
+$headerUnit = $headers + @{"X-UIPATH-OrganizationUnitId"=$folder}
+
+# Get Processes
+$uriProcess = "$uriOrch/odata/Releases"
+$resProcess = Invoke-RestMethod -Uri $uriProcess -Method Get -ContentType $contentType -Headers $headerUnit
+
+If ($resProcess.value.Length -eq 0)
+{
+	WriteLog -err "ERROR: No process is deployed!"
+	exit 1
+}
+
+$procMap = @{}
+WriteLog "================================ Process List ================================"
+$resProcess.value | ForEach-Object {
+	$procId = $_.Id
+	$procKey = $_.Key
+	$procName = $_.Name
+	$procVer = $_.ProcessVersion
+
+	WriteLog " [$procId] $procName ($procVer)"
+	$procMap += @{"$procId" = $procKey}
+}
+
+WriteLog "=============================================================================="
+
+if ($id -eq "")
+{
+	# Interactive Mode
+	$id = Read-Host "Input Process ID"
+}
+
+# Start Job
+if ($id)
+{
+	# Lookup Process Key
+	$procKey = $procMap[$id]
+
+	if ($procKey)
+	{
+		$uriStartJob = "$uriOrch/odata/Jobs/UiPath.Server.Configuration.OData.StartJobs"
+		if ($folderType -eq "Manual")
+		{
+			# Classic Folder
+			$jobStrategy = "All"
+			$bodyStartJob = @{
+				"startInfo" = @{
+					"ReleaseKey" = $procKey
+					"Strategy" = $jobStrategy
+				}
+			} | ConvertTo-Json
+		} else {
+			# Modern Folder
+			$jobStrategy = "ModernJobsCount"
+			$bodyStartJob = @{
+				"startInfo" = @{
+					"ReleaseKey" = $procKey
+					"JobPriority" = "Normal"
+					"JobsCount" = 1
+					"RuntimeType" = "Unattended"
+					"Strategy" = $jobStrategy
+					"InputArguments" = "{}"  
+				}
+			} | ConvertTo-Json
+		}
+
+
+		WriteLog "Starting Job: Process Key [$procKey] with Strategy [$jobStrategy]"
+
+		# Execute Job
+		$resStartJob = Invoke-RestMethod -Uri $uriStartJob -Method Post -Body $bodyStartJob -ContentType $contentType -Headers $headerUnit
+	} else {
+		WriteLog "ERROR: Process ID [$id] doesn't exist" -err
+	}
+}
+
+# Check if StartJob is succssful
+if ($resStartJob -eq $null)
+{
+	WriteLog "ERROR: Start Job is not successful!" -err
+	exit 1
+}
+
+# Check Job Status
+$completedJob = 0
+$failedJob = 0
+$jobCount = $resStartJob.value.Length
+$jobState = @{}
+$counter = 1
+while ($counter -le $retry)
+{
+	$resStartJob.value | foreach {
+		$jobId = $_.Id
+		if (@("Pending", "Running", $null) -contains $jobState[$jobId])
+		{
+			WriteLog "Job ID [$jobId]"
+			$uriJobState = "$uriOrch/odata/Jobs($jobId)"
+
+			# Check Job state
+			WriteLog "`tChecking Job State .... [$counter / $retry]"
+			$resJobState = Invoke-RestMethod -Uri $uriJobState -Method Get -ContentType $contentType -Headers $headerUnit
+			$jobState[$jobId] = $resJobState.State
+			WriteLog ("`tCurrent Job State: " + $jobState[$jobId])
+			
+			# Break if Job is not pending or running
+			if (@("Pending", "Running") -notcontains $jobState[$jobId])
+			{
+				$jobStartTime = $resJobState.StartTime
+				$jobEndTime = $resJobState.EndTime
+				$jobInfo = $resJobState.Info
+				WriteLog "`tStart Time : $jobStartTime"
+				WriteLog "`tEnd Time   : $jobEndTime"
+				WriteLog "`tJob Info   : $jobInfo"
+				$completedJob += 1
+				
+				if ($jobState[$jobId] -ne "Successful") { $failedJob += 1}
+				if ($completedJob -eq $jobCount) { break }
+			}
+		}
+	}
+	Start-Sleep -s $interval
+	$counter++
+}
+
+# Job result
+if ($counter -ge $retry)
+{
+	# Incomplete (Exit Code=1)
+	WriteLog "Some jobs may not be completed!"	
+	exit 1
+} else {
+	if ($failedJob -eq 0)
+	{
+		# Successful (Exit Code=0)
+		WriteLog "All jobs are Successful"
+		exit 0
+	} else {
+		# Unsuccessful (Exit Code=1)
+		WriteLog "ERROR: One of jobs is Unsuccessful!" -err
+		$Env:errorlevel = 1
+		exit 1
+	}
+}
