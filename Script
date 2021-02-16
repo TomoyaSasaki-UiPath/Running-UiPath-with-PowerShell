@@ -1,13 +1,13 @@
 Param (
 	$uriOrch = "https://cloud.uipath.com",
-	[string] $folder = "16286",
-	[string] $id = "3973", 
+	[string] $folder = "Folder ID",
+	[string] $id = "Job ID", 
 	[int] $retry = 20,  
 	[int] $interval = 3,
-	[string] $userKey = "HY_OGNlBXFvlLjxRNIXakei7gwQP3YQ-jchv0swjdI5GU",
-	[string] $accountLogicalName = "uipatcncejvb",
-	[string] $tenantLogicalName = "TEST",
-	[string] $clientId = "8DEv1AMNXczW3y4U15LL3jYf62jK93n5",
+	[string] $userKey = "YOUR REFRESH TOKEN FOR CLOUD ORCHESTRATOR",
+	[string] $accountLogicalName = "YOUR ACCOUNT LOGICAL NAME FOR CLOUD ORCHESTRATOR",
+	[string] $tenantLogicalName = "Tenant Name",
+	[string] $clientId = "YOUR CLIENT ID FOR CLOUD ORCHESTRATOR",
 	[string] $uriAccount = "https://account.uipath.com/oauth/token" # For Cloud Orchestrator
 )
 
